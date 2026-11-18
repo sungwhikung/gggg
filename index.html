@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>겨울밤 기숙사 방</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500&family=Gowun+Batang:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* One dark world: the room fills the screen. No visible controls: the window toggles sound, the cup toggles
+     fullscreen, and the name shows on arrival and when the empty room is tapped. */
+  :root {
+    color-scheme: dark;
+    --shadow: #160b0c;        /* deep brown of the room's shadows */
+    --ember: #e1be95;         /* lamp-light cream for text and icons */
+    --ember-dim: rgba(225, 190, 149, 0.62);
+    --glass: rgba(22, 11, 12, 0.46);
+    --glass-line: rgba(225, 190, 149, 0.26);
+    --focus: #f3d9b4;
+    --font-body: "Gowun Batang", "Nanum Myeongjo", "Apple SD Gothic Neo", "Malgun Gothic", serif;
+    --font-display: "Cinzel", "Trajan Pro", "Times New Roman", serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--shadow);
+    color: var(--ember);
+    font-family: var(--font-body);
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .stage { position: fixed; inset: 0; background: var(--shadow); }
+  .stage img, .stage canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: 50% 50%;
+  }
+  .stage canvas { opacity: 0; transition: opacity 1.2s ease; }
+  .stage canvas.on { opacity: 1; }
+  /* On tall screens keep the lamp and the window in view. */
+  @media (max-aspect-ratio: 1/1) {
+    .stage img, .stage canvas { object-position: 31% 50%; }
+  }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 72px max(20px, 3vw) max(18px, 2.4vw);
+    background: linear-gradient(to top, rgba(22, 11, 12, 0.66), rgba(22, 11, 12, 0));
+    opacity: 0; pointer-events: none;
+    transition: opacity 1.4s ease;
+  }
+  .bar.show { opacity: 1; }
+  .idle { cursor: none; }
+  .caption h1 {
+    margin: 0; font-family: var(--font-display); font-weight: 500;
+    font-size: clamp(28px, 4.2vw, 54px); letter-spacing: 0.09em; line-height: 1.1;
+    text-shadow: 0 1px 18px rgba(0, 0, 0, 0.5);
+  }
+  .caption p { margin: 6px 0 0; font-size: clamp(12px, 1.3vw, 15px); color: var(--ember-dim); letter-spacing: 0.02em; }
+  .note {
+    position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
+    max-width: min(90vw, 420px); padding: 10px 16px; border-radius: 14px;
+    background: var(--glass); border: 1px solid var(--glass-line);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    font-size: 13px; line-height: 1.5; text-align: center;
+  }
+  .note[hidden] { display: none; }
+  @media (prefers-reduced-motion: reduce) { .bar, .stage canvas { transition: none; } }
+</style>
+</head>
+<body>
+<main class="stage">
+  <img src="room.jpg" alt="눈 내리는 겨울 저녁, 등잔불이 켜진 돌벽 기숙사 방. 앞쪽 책상에 붉은 체크무늬 식탁보가 비스듬히 덮여 있고 그 위에 펼쳐진 책과 깃펜, 백랍 컵이 놓여 있다. 뒤로 고딕 창과 진홍색 커튼 침대가 보인다.">
+  <canvas id="view" aria-hidden="true"></canvas>
+</main>
+
+<div class="bar" id="bar">
+  <div class="caption">
+    <h1>Gryffindor</h1>
+    <p>눈 내리는 저녁, 등잔불 하나</p>
+  </div>
+</div>
+<div class="note" id="note" role="status" hidden></div>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 p;
+varying vec2 uv;
+void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }
+</script>
+<script id="fs-src" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 uv;
+uniform sampler2D tCool, tA, tB, tCandle, tSconce, tLantern, tFire, tSnow;
+uniform float wA, wB, wCandle, wSconce, wLantern, wFire;
+uniform vec4 rect;          // window area: x0, y0, x1, y1 (0..1, origin bottom-left)
+uniform vec2 res;
+uniform float seed;
+
+// each layer stores one light's contribution, cube-root encoded, 1.0 = 16.0 linear
+vec3 dec(sampler2D t) { vec3 v = texture2D(t, uv).rgb; return v * v * v * 16.0; }
+vec3 curve(vec3 v) { vec3 a = pow(max(v, 0.0), vec3(1.5)); return a / (a + 0.7836); }
+float hash(vec2 q) { return fract(sin(dot(q, vec2(12.9898, 78.233)) + seed) * 43758.5453); }
+
+void main() {
+  vec3 x = dec(tCool) + wA * dec(tA) + wB * dec(tB) + wCandle * dec(tCandle)
+         + wSconce * dec(tSconce) + wLantern * dec(tLantern) + wFire * dec(tFire);
+  if (uv.x > rect.x && uv.x < rect.z && uv.y > rect.y && uv.y < rect.w) {
+    vec4 s = texture2D(tSnow, (uv - rect.xy) / (rect.zw - rect.xy));
+    x += s.rgb * 1.5;
+  }
+  // film curve: mostly hue-preserving so the amber stays amber, hottest cores roll off to cream
+  float n = max(x.r, max(x.g, x.b));
+  vec3 hp = x * (curve(vec3(n)).r / max(n, 1e-6));
+  vec3 y = mix(curve(x), hp, 0.65);
+  float hot = pow(clamp((n - 1.5) / 10.0, 0.0, 1.0), 0.7) * 0.55;
+  y = mix(y, max(y.r, max(y.g, y.b)) * vec3(1.0, 0.93, 0.80), hot);
+  y += vec3(0.0085, 0.0040, 0.0036) * (1.0 - y) * (1.0 - y);           // brown floor under the shadows
+  float l = dot(y, vec3(0.2126, 0.7152, 0.0722));
+  y = (l + (y - l) * 1.04) * vec3(1.06, 0.97, 0.84);
+  vec2 c = (uv - 0.5) * 2.0; c.y *= res.y / res.x;
+  y *= 1.0 - 0.40 * pow(clamp(dot(c, c), 0.0, 1.4), 1.2);                // vignette
+  y = clamp(y, 0.0, 1.0);
+  vec3 s = mix(y * 12.92, 1.055 * pow(y, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, y));
+  float sl = dot(s, vec3(0.2126, 0.7152, 0.0722));
+  vec2 px = floor(uv * res);
+  float g = hash(px) + hash(px + 19.19) - 1.0;                           // film grain
+  s += g * 0.030 * (0.55 + 0.9 * sqrt(sl) * (1.0 - 0.6 * sl));
+  gl_FragColor = vec4(s, 1.0);
+}
+</script>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var canvas = document.getElementById('view');
+  var bar = document.getElementById('bar');
+  var note = document.getElementById('note');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var noteTimer, idleTimer, capTimer;
+  var running = false, started = false, windNow = 0;
+
+  function say(text) {
+    note.textContent = text; note.hidden = false;
+    clearTimeout(noteTimer); noteTimer = setTimeout(function () { note.hidden = true; }, 6000);
+  }
+  function showCaption(ms) {
+    bar.classList.add('show');
+    clearTimeout(capTimer); capTimer = setTimeout(function () { bar.classList.remove('show'); }, ms);
+  }
+
+  // ---------------------------------------------------------------- fullscreen (the cup)
+  function isFull() { return document.fullscreenElement || document.webkitFullscreenElement; }
+  function refused() { say('여기서는 전체 화면을 열 수 없어요. 링크를 브라우저 새 탭에서 연 다음 다시 눌러 주세요.'); }
+  function toggleFull() {
+    try {
+      if (isFull()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+      var req = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (!req) { refused(); return; }
+      var p = req.call(root);
+      if (p && p.catch) p.catch(refused);
+    } catch (e) { refused(); }
+  }
+
+  // ---------------------------------------------------------------- where the window and the cup are (render pixels)
+  var HIT = { cup: [567, 779, 642, 884], win: [[44,909,924],[48,905,932],[52,893,934],[56,890,945],[60,881,951],[64,875,956],[68,870,958],[72,867,965],[76,866,967],[80,858,970],[84,854,973],[88,851,977],[92,847,977],[96,846,986],[100,845,990],[104,839,993],[108,837,995],[112,835,998],[116,833,999],[120,830,998],[124,829,1005],[128,829,1007],[132,824,1008],[136,821,1010],[140,819,1011],[144,817,1010],[148,816,1011],[152,814,1011],[156,814,1011],[160,814,1017],[164,812,1019],[168,809,1021],[172,809,1022],[176,807,1023],[180,807,1024],[184,806,1025],[188,805,1025],[192,805,1024],[196,805,1022],[200,805,1025],[204,853,1025],[208,814,1027],[212,813,1027],[216,812,1027],[220,806,1027],[224,805,1027],[228,804,1023],[232,804,1025],[236,804,1026],[240,804,1027],[244,804,1026],[248,804,1025],[252,804,1023],[256,805,1026],[260,807,1027],[264,815,1027],[268,806,1027],[272,815,1027],[276,807,1027],[280,806,1026],[284,805,1021],[288,805,1024],[292,804,1026],[296,804,1026],[300,804,1026],[304,805,1024],[308,805,1022],[312,806,1026],[316,808,1026],[320,823,1003],[324,819,1023],[328,817,1027],[332,808,1027],[336,806,1026],[340,806,1021],[344,805,1023],[348,805,1025],[352,805,1026],[356,805,1026],[360,805,1024],[364,806,1022],[368,807,1025],[372,810,1026],[376,816,1026],[380,816,1027],[384,817,1026],[388,809,1026],[392,807,1025],[396,806,1021],[400,806,1023],[404,806,1025],[408,806,1026],[412,806,1025],[416,806,1023],[420,809,1015]] };
+  function toImage(cx, cy) {
+    var w = window.innerWidth, h = window.innerHeight;
+    var posX = window.matchMedia('(max-aspect-ratio: 1/1)').matches ? 0.31 : 0.5;
+    var k = Math.max(w / 1920, h / 1080);
+    return { x: (cx - (w - 1920 * k) * posX) / k, y: (cy - (h - 1080 * k) * 0.5) / k, k: k };
+  }
+  function onWindow(p) {
+    var pad = 10 / Math.min(p.k, 1), r = HIT.win, i, row;
+    for (i = 0; i < r.length; i++) {
+      row = r[i];
+      if (Math.abs(p.y - (row[0] + 2)) <= 2 + pad && p.x >= row[1] - pad && p.x <= row[2] + pad) return true;
+    }
+    return false;
+  }
+  function onCup(p) {
+    var pad = 14 / Math.min(p.k, 1), c = HIT.cup;
+    return p.x >= c[0] - pad && p.x <= c[2] + pad && p.y >= c[1] - pad && p.y <= c[3] + pad;
+  }
+
+  // the cursor hides while the room is left alone
+  function wake() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { document.body.classList.add('idle'); }, 3500);
+  }
+  ['pointermove', 'pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
+    document.addEventListener(ev, wake, { passive: true });
+  });
+  wake();
+  showCaption(6000);
+
+  // ---------------------------------------------------------------- live room
+  var W0 = 1920, H0 = 1080;
+  var RECT = { x0: 657, x1: 1138, y0: 556, y1: 1080 };          // window area in the render, y from the bottom
+  var big = Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1) >= 1500;
+  var W = big ? 1920 : 1280, H = big ? 1080 : 720, K = W / W0;
+  var LAYERS = ['cool', 'lampa', 'lampb', 'candle', 'sconce', 'lantern', 'fire'];
+  var UNI = ['tCool', 'tA', 'tB', 'tCandle', 'tSconce', 'tLantern', 'tFire', 'tSnow'];
+  var gl, prog, U = {}, snowTex, snowCv, sctx, sprite, maskImg, flakes = [];
+
+  function loadImg(src) {
+    return new Promise(function (ok, bad) {
+      var im = new Image();
+      im.onload = function () { ok(im); };
+      im.onerror = function () { bad(new Error(src)); };
+      im.src = src;
+    });
+  }
+  function tex(unit, source) {
+    var t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    return t;
+  }
+  function shader(type, id) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, document.getElementById(id).textContent); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+
+  function setup(imgs) {
+    canvas.width = W; canvas.height = H;
+    gl = canvas.getContext('webgl', { antialias: false, alpha: false, powerPreference: 'low-power' });
+    if (!gl) throw new Error('no webgl');
+    prog = gl.createProgram();
+    gl.attachShader(prog, shader(gl.VERTEX_SHADER, 'vs')); gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, 'fs-src'));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    var loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    var scratch = null;
+    for (var i = 0; i < LAYERS.length; i++) {
+      var src = imgs[i];
+      if (!big) {                                              // smaller screens: lighter textures
+        scratch = document.createElement('canvas'); scratch.width = W; scratch.height = H;
+        scratch.getContext('2d').drawImage(src, 0, 0, W, H); src = scratch;
+      }
+      tex(i, src);
+    }
+    maskImg = imgs[LAYERS.length];
+    snowCv = document.createElement('canvas');
+    snowCv.width = Math.round((RECT.x1 - RECT.x0) * K); snowCv.height = Math.round((RECT.y1 - RECT.y0) * K);
+    sctx = snowCv.getContext('2d');
+    snowTex = tex(7, snowCv);
+    UNI.forEach(function (n, i) { gl.uniform1i(gl.getUniformLocation(prog, n), i); });
+    ['wA', 'wB', 'wCandle', 'wSconce', 'wLantern', 'wFire', 'rect', 'res', 'seed'].forEach(function (n) { U[n] = gl.getUniformLocation(prog, n); });
+    gl.uniform4f(U.rect, RECT.x0 / W0, RECT.y0 / H0, RECT.x1 / W0, RECT.y1 / H0);
+    gl.uniform2f(U.res, W, H);
+    gl.viewport(0, 0, W, H);
+
+    // soft out-of-focus flake
+    sprite = document.createElement('canvas'); sprite.width = sprite.height = 64;
+    var g = sprite.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(226,236,255,1)'); gr.addColorStop(0.35, 'rgba(214,228,255,0.9)');
+    gr.addColorStop(0.7, 'rgba(200,216,255,0.3)'); gr.addColorStop(1, 'rgba(190,210,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    seedSnow();
+  }
+
+  // ---------------------------------------------------------------- snow (units: render pixels inside the window rect)
+  var SW = RECT.x1 - RECT.x0, SH = RECT.y1 - RECT.y0;
+  var XL = 110, XR = 410, YT = 20, YB = 440;                    // where the glass is inside the rect
+  function newFlake(anywhere) {
+    var d = Math.random();                                      // 0 = far, 1 = close to the glass
+    var f = {
+      d: d,
+      r: 1.5 + d * d * 2.3 + Math.random() * 0.7,
+      vy: 55 + d * 150 + Math.random() * 35,
+      a: 0.50 + d * 0.4 + Math.random() * 0.2,
+      ph: Math.random() * 6.283, fq: 0.5 + Math.random() * 1.4, sw: 6 + Math.random() * 16,
+      tw: 1.5 + Math.random() * 3
+    };
+    f.x = XL - 40 + Math.random() * (XR - XL + 80);
+    f.y = anywhere ? YT + Math.random() * (YB - YT) : YT - f.r - Math.random() * 30;
+    return f;
+  }
+  function seedSnow() { flakes = []; for (var i = 0; i < 260; i++) flakes.push(newFlake(true)); }
+  var gust = { t0: -99, amp: 0, next: 3 };
+  function wind(t) {
+    if (t > gust.next) { gust.t0 = t; gust.amp = (Math.random() < 0.5 ? -1 : 1) * (40 + Math.random() * 70); gust.next = t + 5 + Math.random() * 7; }
+    var dt = t - gust.t0, gk = dt < 0 ? 0 : Math.sin(Math.min(dt / 2.6, 1) * Math.PI);
+    return 16 * Math.sin(t * 0.37) + 10 * Math.sin(t * 0.83 + 2) + gust.amp * gk * gk;
+  }
+  function stepSnow(t, dt) {
+    var w = wind(t), i, f;
+    windNow = w;
+    sctx.setTransform(K, 0, 0, K, 0, 0);
+    sctx.globalCompositeOperation = 'source-over'; sctx.globalAlpha = 1;
+    sctx.clearRect(0, 0, SW, SH);
+    sctx.globalCompositeOperation = 'lighter';
+    for (i = 0; i < flakes.length; i++) {
+      f = flakes[i];
+      f.y += (f.vy + Math.abs(w) * 0.25 * f.d) * dt;
+      f.x += (w * (0.35 + 0.65 * f.d) + f.sw * Math.sin(f.ph + t * f.fq * 2)) * dt;
+      if (f.y - f.r > YB) { flakes[i] = f = newFlake(false); }
+      if (f.x < XL - 60) f.x += XR - XL + 120; else if (f.x > XR + 60) f.x -= XR - XL + 120;
+      sctx.globalAlpha = Math.min(1, f.a * (0.8 + 0.2 * Math.sin(f.ph * 3 + t * f.tw)));
+      sctx.drawImage(sprite, f.x - f.r, f.y - f.r, f.r * 2, f.r * 2);
+    }
+    sctx.globalCompositeOperation = 'destination-in'; sctx.globalAlpha = 1;    // keep flakes behind the leaded glass
+    sctx.drawImage(maskImg, 0, 0, SW, SH);
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, snowTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, snowCv);
+  }
+
+  // ---------------------------------------------------------------- flame flicker
+  function S(t, f, p) { return Math.sin(6.2832 * f * t + p); }
+  function Flame(amp, every) { this.amp = amp; this.every = every; this.t0 = -99; this.next = Math.random() * every; this.k = 0; }
+  Flame.prototype.kick = function (t) {            // an occasional little flutter, like a draught catching the flame
+    if (t > this.next) { this.t0 = t; this.k = this.amp * (0.5 + Math.random()); this.next = t + this.every * (0.5 + Math.random()); }
+    var dt = t - this.t0;
+    return dt < 0 || dt > 2 ? 0 : this.k * Math.exp(-dt / 0.28) * Math.sin(6.2832 * 8.5 * dt);
+  };
+  var fLamp = new Flame(0.07, 6), fCandle = new Flame(0.16, 4), fSconce = new Flame(0.15, 5), fLantern = new Flame(0.10, 6);
+  function lights(t) {
+    var m = 1 + 0.040 * S(t, 0.9, 0.3) + 0.030 * S(t, 2.3, 1.9) + 0.024 * S(t, 4.1, 4.1) + 0.016 * S(t, 7.7, 2.2) + 0.010 * S(t, 13.1, 5.0) + fLamp.kick(t);
+    var sway = 0.42 * S(t, 1.3, 1.0) + 0.26 * S(t, 3.1, 2.2) + 0.14 * S(t, 6.7, 0.5);
+    gl.uniform1f(U.wA, m * (1 + sway) / 2); gl.uniform1f(U.wB, m * (1 - sway) / 2);
+    gl.uniform1f(U.wCandle, 1 + 0.075 * S(t, 1.1, 4.0) + 0.055 * S(t, 3.4, 1.3) + 0.040 * S(t, 5.9, 2.9) + 0.028 * S(t, 9.7, 0.2) + 0.016 * S(t, 15.3, 5.6) + fCandle.kick(t));
+    gl.uniform1f(U.wSconce, 1 + 0.070 * S(t, 1.4, 1.1) + 0.050 * S(t, 2.9, 0.4) + 0.038 * S(t, 6.3, 3.3) + 0.026 * S(t, 10.9, 5.2) + 0.014 * S(t, 17.0, 2.0) + fSconce.kick(t));
+    gl.uniform1f(U.wLantern, 1 + 0.060 * S(t, 1.2, 0.7) + 0.045 * S(t, 3.7, 3.6) + 0.032 * S(t, 6.9, 1.5) + 0.020 * S(t, 11.3, 4.8) + fLantern.kick(t));
+    gl.uniform1f(U.wFire, 1 + 0.12 * S(t, 0.23, 0.8) + 0.08 * S(t, 0.61, 3.0) + 0.06 * S(t, 1.7, 5.5) + 0.03 * S(t, 3.9, 1.2));
+  }
+
+  // ---------------------------------------------------------------- sound: made in the browser, starts only from the button
+  var audio = null, soundOn = false, soundTimer = null;
+  var LEVEL = { wind: 0.16, fire: 1.2, snow: 2.6, master: 0.9 };
+
+  function makeNoise(ctx, secs, kind) {            // looping noise bed
+    var sr = ctx.sampleRate, n = Math.floor(secs * sr), f = Math.floor(0.3 * sr), x = new Float32Array(n + f);
+    var b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0, i, w, k;
+    for (i = 0; i < n + f; i++) {
+      w = Math.random() * 2 - 1;
+      if (kind === 'pink') {
+        b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
+        b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
+        x[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+      } else if (kind === 'brown') { last = (last + 0.02 * w) / 1.02; x[i] = last * 3.5; }
+      else x[i] = w;
+    }
+    var buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+    for (i = 0; i < n; i++) d[i] = x[i];
+    for (i = 0; i < f; i++) { k = i / f; d[i] = x[i] * k + x[n + i] * (1 - k); }      // seamless loop point
+    return buf;
+  }
+  function makeHit(ctx, ms, tau, lo, hi) {         // one short, band-limited, decaying burst (a crackle or a tick)
+    var sr = ctx.sampleRate, n = Math.floor(ms / 1000 * sr), buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+    var a = Math.exp(-6.2832 * hi / sr), b = Math.exp(-6.2832 * lo / sr), lp = 0, hp = 0, prev = 0, peak = 1e-9, i, w;
+    for (i = 0; i < n; i++) {
+      w = Math.random() * 2 - 1;
+      lp = lp * a + w * (1 - a); hp = b * (hp + lp - prev); prev = lp;
+      d[i] = hp * Math.exp(-i / (tau / 1000 * sr)) * Math.min(1, i / 12);
+      peak = Math.max(peak, Math.abs(d[i]));
+    }
+    for (i = 0; i < n; i++) d[i] /= peak;
+    return buf;
+  }
+  function buildAudio(ctx) {
+    var A = { ctx: ctx, nextC: 0, nextT: 0 };
+    var out = ctx.createGain(); out.gain.value = 0;
+    var comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 10; comp.ratio.value = 3; comp.attack.value = 0.005; comp.release.value = 0.25;
+    comp.connect(out); out.connect(ctx.destination);
+    function bus(g) { var n = ctx.createGain(); n.gain.value = g; n.connect(comp); return n; }
+    A.out = out; A.wind = bus(LEVEL.wind); A.fire = bus(LEVEL.fire); A.snow = bus(LEVEL.snow);
+    function pan(node, p, dest) {
+      if (ctx.createStereoPanner) { var s = ctx.createStereoPanner(); s.pan.value = p; node.connect(s); s.connect(dest); }
+      else node.connect(dest);
+    }
+    function loop(buf, offset) { var s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.start(0, offset || 0); return s; }
+    function band(type, freq, q) { var f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q; return f; }
+    function gain(v) { var g = ctx.createGain(); g.gain.value = v; return g; }
+    var pink = makeNoise(ctx, 9, 'pink'), brown = makeNoise(ctx, 7, 'brown'), white = makeNoise(ctx, 3, 'white');
+
+    // wind heard through a closed window: two muffled bands, left and right, plus a thin whistle in the gusts
+    A.wf = []; A.wg = [];
+    [[-0.5, 0], [0.5, 4.1]].forEach(function (p) {
+      var s = loop(pink, p[1]), f = band('bandpass', 380, 0.9), g = gain(0.2);
+      s.connect(f); f.connect(g); pan(g, p[0], A.wind); A.wf.push(f); A.wg.push(g);
+    });
+    A.whf = band('bandpass', 900, 7); A.whg = gain(0);
+    loop(pink, 2.2).connect(A.whf); A.whf.connect(A.whg); pan(A.whg, -0.15, A.wind);
+
+    // fire: a low murmur off to the left, a little hiss, and crackles
+    var fl = band('lowpass', 260, 0.7); A.fg = gain(0.2);
+    loop(brown, 0).connect(fl); fl.connect(A.fg); pan(A.fg, -0.45, A.fire);
+    var hf = band('bandpass', 2200, 0.6), hg = gain(0.02);
+    loop(pink, 6).connect(hf); hf.connect(hg); pan(hg, -0.3, A.fire);
+    A.crk = [makeHit(ctx, 70, 5, 700, 5000), makeHit(ctx, 90, 12, 500, 3500), makeHit(ctx, 50, 3, 1500, 7000), makeHit(ctx, 120, 20, 350, 2500)];
+
+    // snow: an airy hush and soft ticks of flakes meeting the pane
+    var sf = band('bandpass', 6500, 0.7); A.sg = gain(0.01);
+    loop(white, 0).connect(sf); sf.connect(A.sg); pan(A.sg, 0.1, A.snow);
+    A.tck = [makeHit(ctx, 30, 3, 3000, 9000), makeHit(ctx, 25, 2, 4500, 12000), makeHit(ctx, 40, 5, 2200, 7000)];
+
+    A.hit = function (buf, t, g, p, rate, dest) {
+      var s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
+      var gn = gain(g); s.connect(gn); pan(gn, p, dest); s.start(t);
+    };
+    A.schedule = function (until, u) {             // u: how hard the wind blows, 0..1
+      var big;
+      while (A.nextC < until) {
+        big = Math.random();
+        A.hit(A.crk[(Math.random() * 4) | 0], A.nextC, 0.03 + 0.10 * big * big + (Math.random() < 0.06 ? 0.25 : 0),
+              -0.75 + Math.random() * 0.6, 0.6 + Math.random(), A.fire);
+        A.nextC += Math.random() < 0.3 ? 0.03 + Math.random() * 0.08 : -Math.log(1 - Math.random()) / 3.2;
+      }
+      while (A.nextT < until) {
+        A.hit(A.tck[(Math.random() * 3) | 0], A.nextT, 0.012 + 0.03 * Math.random() * (0.6 + u),
+              -0.5 + Math.random() * 0.9, 0.8 + Math.random() * 0.6, A.snow);
+        A.nextT += -Math.log(1 - Math.random()) / (7 + 26 * u);
+      }
+    };
+    A.blow = function (t, w) {                     // follows the same wind that pushes the snow
+      var u = Math.min(Math.abs(w) / 110, 1), l = 0.5 + 0.5 * Math.sin(t * 0.23) * Math.sin(t * 0.071 + 1);
+      var g = 0.10 + 0.08 * l + 0.28 * Math.pow(u, 1.3), f = 280 + 120 * l + 360 * u, i;
+      for (i = 0; i < 2; i++) { A.wf[i].frequency.setTargetAtTime(f * (i ? 1.12 : 1), t, 0.5); A.wg[i].gain.setTargetAtTime(g, t, 0.5); }
+      A.whf.frequency.setTargetAtTime(800 + 700 * u + 150 * l, t, 0.6); A.whg.gain.setTargetAtTime(0.005 * l + 0.04 * u * u, t, 0.6);
+      A.sg.gain.setTargetAtTime(0.008 + 0.02 * u, t, 0.5);
+      A.fg.gain.setTargetAtTime(0.16 + 0.08 * Math.sin(t * 1.7) * Math.sin(t * 0.9 + 2), t, 0.2);
+      return u;
+    };
+    return A;
+  }
+  function soundTick() {
+    if (!audio || !soundOn) return;
+    var t = audio.ctx.currentTime;
+    if (audio.nextC < t) audio.nextC = t + 0.03;
+    if (audio.nextT < t) audio.nextT = t + 0.03;
+    audio.schedule(t + 0.4, audio.blow(t, running ? windNow : 0));
+  }
+  function soundSet(on) {
+    var c = audio.ctx, t = c.currentTime;
+    soundOn = on;
+    audio.out.gain.cancelScheduledValues(t);
+    if (on) {
+      var p = c.resume(); if (p && p.catch) p.catch(function () {});
+      audio.out.gain.setTargetAtTime(LEVEL.master, t, 0.7);
+      if (!soundTimer) soundTimer = setInterval(soundTick, 150);
+      soundTick();
+    } else {
+      audio.out.gain.setTargetAtTime(0, t, 0.2);
+      setTimeout(function () { if (!soundOn) { var q = c.suspend(); if (q && q.catch) q.catch(function () {}); } }, 1100);
+    }
+  }
+  function toggleSound() {
+    try {
+      if (!audio) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) throw new Error('no audio');
+        audio = buildAudio(new AC());
+      }
+      soundSet(!soundOn);
+    } catch (e) { say('이 기기에서는 소리를 켤 수 없어요.'); }
+  }
+  var soundWas = false;
+  document.addEventListener('visibilitychange', function () {
+    if (!audio) return;
+    if (document.hidden) { soundWas = soundOn; if (soundOn) soundSet(false); }
+    else if (soundWas) soundSet(true);
+  });
+
+  // ---------------------------------------------------------------- loop
+  var clock = 0, last = 0, lastDraw = 0;
+  function draw(t, dt) {
+    stepSnow(t, dt); lights(t);
+    gl.uniform1f(U.seed, Math.floor(t * 18) * 0.731 % 61.0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  function frame(now) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+    if (now - lastDraw < 30) return;                             // about 30 pictures a second is plenty
+    var dt = Math.min((now - last) / 1000, 0.1); last = now; lastDraw = now;
+    clock += dt;
+    draw(clock, dt);
+  }
+  function start() { if (running) return; running = true; last = lastDraw = performance.now(); requestAnimationFrame(frame); }
+  function stop() { running = false; }
+
+  // ---------------------------------------------------------------- touching the room
+  document.addEventListener('click', function (e) {
+    var p = toImage(e.clientX, e.clientY);
+    if (onWindow(p)) { toggleSound(); return; }
+    if (onCup(p)) { toggleFull(); return; }
+    showCaption(4500);
+    if (started && !running) start();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'f' || e.key === 'F') toggleFull();
+    else if (e.key === 'm' || e.key === 'M') toggleSound();
+    else if (e.key === ' ' && started) { e.preventDefault(); if (running) stop(); else start(); }
+  });
+
+  Promise.all(LAYERS.map(function (n) { return loadImg('l_' + n + '.jpg'); }).concat([loadImg('snowmask.png')]))
+    .then(function (imgs) {
+      setup(imgs);
+      canvas.addEventListener('webglcontextlost', function (e) { e.preventDefault(); stop(); canvas.classList.remove('on'); });
+      draw(0, 0);
+      canvas.classList.add('on'); started = true;
+      if (reduce) say('움직임 줄이기 설정이 켜져 있어 멈춰 두었어요. 빈 곳을 누르면 눈이 내리고 불빛이 일렁여요.');
+      else start();
+      window.__room = { draw: draw, buildAudio: buildAudio, toImage: toImage, onWindow: onWindow, onCup: onCup, sound: function () { return soundOn; } };
+    })
+    .catch(function () { /* the still picture underneath stays as it is */ });
+})();
+</script>
+</body>
+</html>
